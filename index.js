@@ -1,77 +1,69 @@
-const express = require('express');
-const app = express();
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const Parser = require('rss-parser');
 const cron = require('node-cron');
+const express = require('express');
+const pino = require('pino');
 
-// বট সজাগ রাখার জন্য Web Server
-app.get('/', (req, res) => res.send('WhatsApp Bot is Alive!'));
+const app = express();
+app.get('/', (req, res) => res.send('Bot is Alive!'));
 app.listen(process.env.PORT || 3000, () => console.log('Server is running...'));
 
-const parser = new Parser();
-const RSS_URL = 'https://channelabd.com/rss.php'; // আপনার RSS লিংক
+const RSS_URL = 'https://channelabd.com/rss.php'; 
+
+// ⚠️ এখানে আপনার হোয়াটসঅ্যাপ চ্যানেলের ID টি বসান
+const CHANNEL_JID = 'YOUR_CHANNEL_ID_HERE'; 
+
 let lastArticleGuid = '';
+const parser = new Parser();
 
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
-});
-
-client.on('qr', (qr) => {
-    console.log('=========================================');
-    console.log('নিচের QR কোডটি আপনার হোয়াটসঅ্যাপ থেকে স্ক্যান করুন');
-    console.log('=========================================');
-    qrcode.generate(qr, { small: true });
-});
-
-client.on('ready', async () => {
-    console.log('✅ হোয়াটসঅ্যাপ বট সফলভাবে কানেক্ট হয়েছে!');
-
-    // চ্যানেল আইডি বের করা
-    const chats = await client.getChats();
-    const channels = chats.filter(c => c.id._serialized.endsWith('@newsletter'));
-
-    console.log('\n--- আপনার হোয়াটসঅ্যাপ চ্যানেলগুলোর ID ---');
-    channels.forEach(c => {
-        console.log(`নাম: ${c.name} | ID: ${c.id._serialized}`);
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    
+    const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        logger: pino({ level: 'silent' }) 
     });
-    console.log('-------------------------------------------\n');
 
-    // প্রতি ১০ মিনিট পর পর চেক করবে
-    cron.schedule('*/10 * * * *', () => {
-        checkAndSendNews();
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, qr } = update;
+        if(qr) {
+            console.log('\n=========================================');
+            console.log('নিচের QR কোডটি আপনার হোয়াটসঅ্যাপ থেকে স্ক্যান করুন');
+            console.log('=========================================\n');
+            qrcode.generate(qr, { small: true });
+        }
+        if(connection === 'close') {
+            console.log('কানেকশন বন্ধ হয়েছে, আবার যুক্ত করা হচ্ছে...');
+            startBot();
+        } else if(connection === 'open') {
+            console.log('✅ হোয়াটসঅ্যাপ সফলভাবে কানেক্ট হয়েছে!');
+        }
     });
-});
 
-async function checkAndSendNews() {
-    try {
-        let feed = await parser.parseURL(RSS_URL);
-        if (feed.items.length > 0) {
-            let latestArticle = feed.items[0];
-
-            if (latestArticle.guid !== lastArticleGuid) {
-                lastArticleGuid = latestArticle.guid;
-
-                let message = `*${latestArticle.title}*\n\nবিস্তারিত পড়ুন: \n${latestArticle.link}`;
-
-                // ⚠️ এখানে আপনার চ্যানেলের ID বসাতে হবে
-                const channelId = 'YOUR_CHANNEL_ID_HERE';
-
-                if(channelId !== 'YOUR_CHANNEL_ID_HERE') {
-                    await client.sendMessage(channelId, message);
-                    console.log('✅ চ্যানেলে খবর পাঠানো হয়েছে: ' + latestArticle.title);
-                } else {
-                    console.log('⚠️ অনুগ্রহ করে কোডে আপনার চ্যানেলের ID বসান!');
+    // প্রতি ১০ মিনিট পর পর ওয়েবসাইট চেক করবে
+    cron.schedule('*/10 * * * *', async () => {
+        try {
+            let feed = await parser.parseURL(RSS_URL);
+            if (feed.items.length > 0) {
+                let latest = feed.items[0];
+                if (latest.guid !== lastArticleGuid) {
+                    lastArticleGuid = latest.guid;
+                    let message = `🔴 *${latest.title}*\n\nবিস্তারিত পড়ুন: 👇\n${latest.link}`;
+                    
+                    if (CHANNEL_JID !== 'YOUR_CHANNEL_ID_HERE') {
+                        await sock.sendMessage(CHANNEL_JID, { text: message });
+                        console.log('✅ চ্যানেলে খবর পাঠানো হয়েছে:', latest.title);
+                    }
                 }
             }
+        } catch (error) {
+            console.log('খবর আনতে সমস্যা:', error.message);
         }
-    } catch (error) {
-        console.log('খবর আনতে সমস্যা হয়েছে:', error.message);
-    }
+    });
 }
 
-client.initialize();
+startBot();
