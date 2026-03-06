@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const Parser = require('rss-parser');
 const cron = require('node-cron');
 const express = require('express');
@@ -9,16 +9,16 @@ const QRCode = require('qrcode');
 const app = express();
 let currentQR = '';
 let connectionStatus = 'Connecting...';
+let globalSock = null; // বটের গ্লোবাল এক্সেস
 
 // ==========================================
-// ১০০% গ্যারান্টিড QR Code জেনারেটর
+// ওয়েবসাইটে QR Code দেখানোর সিস্টেম
 // ==========================================
 app.get('/', async (req, res) => {
     if (connectionStatus === 'connected') {
         res.send('<h1 style="color:green;text-align:center;margin-top:50px;">✅ হোয়াটসঅ্যাপ সফলভাবে কানেক্ট হয়েছে! বট কাজ করছে...</h1>');
     } else if (currentQR) {
         try {
-            // গুগল API এর বদলে সরাসরি লোকাল ইমেজ তৈরি
             const qrImage = await QRCode.toDataURL(currentQR);
             res.send(`
                 <html>
@@ -33,7 +33,7 @@ app.get('/', async (req, res) => {
                 </html>
             `);
         } catch (err) {
-            res.send('<h2 style="text-align:center;">QR Code লোড হতে সমস্যা হচ্ছে...</h2>');
+            res.send('<h2 style="text-align:center;">QR Code তৈরি হচ্ছে, অপেক্ষা করুন...</h2>');
         }
     } else {
         res.send(`
@@ -41,16 +41,16 @@ app.get('/', async (req, res) => {
             <head><meta http-equiv="refresh" content="5"></head>
             <body style="text-align:center;margin-top:50px;font-family:sans-serif;">
                 <h2 style="color:#555;">অপেক্ষা করুন, বট রেডি হচ্ছে...</h2>
-                <p>পেজটি নিজে নিজেই রিলোড হবে।</p>
+                <p>সার্ভার চালু হচ্ছে, পেজটি নিজে নিজেই রিলোড হবে।</p>
                 <br><br>
-                <a href="/reset" style="display:inline-block; padding:10px 20px; background:#d9534f; color:white; text-decoration:none; border-radius:5px;">বট Reset করুন</a>
+                <a href="/reset" style="display:inline-block; padding:10px 20px; background:#d9534f; color:white; text-decoration:none; border-radius:5px;">বট Reset করুন (যদি QR না আসে)</a>
             </body>
             </html>
         `);
     }
 });
 
-// মেমোরি জ্যাম হলে রিসেট করার লজিক
+// মেমোরি রিসেট
 app.get('/reset', (req, res) => {
     if(fs.existsSync('auth_info_baileys')) {
         fs.rmSync('auth_info_baileys', { recursive: true, force: true });
@@ -71,15 +71,16 @@ const parser = new Parser();
 async function startBot() {
     console.log('বট চালু হচ্ছে...');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-    console.log('মেমোরি লোড হয়েছে...');
     
     const sock = makeWASocket({
         auth: state,
-        browser: ['Windows', 'Chrome', '111.0'], 
+        browser: Browsers.macOS('Desktop'), // ক্র্যাশ ঠেকানোর জন্য সবচেয়ে নিরাপদ ব্রাউজার সিস্টেম
         logger: pino({ level: 'silent' }),
         syncFullHistory: false,
         printQRInTerminal: false
     });
+
+    globalSock = sock;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -95,15 +96,18 @@ async function startBot() {
             connectionStatus = 'disconnected';
             currentQR = '';
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('কানেকশন বন্ধ হয়েছে। আবার চালু হচ্ছে...');
+            
+            console.log('কানেকশন বন্ধ হয়েছে। ৫ সেকেন্ড পর আবার চেষ্টা করা হচ্ছে...');
+            
+            // ⚠️ সার্ভার ক্র্যাশ ঠেকানোর জন্য ৫ সেকেন্ডের ব্রেক (Delay)
             if(shouldReconnect) {
-                startBot();
+                setTimeout(startBot, 5000);
             } else {
-                console.log('লগআউট হয়ে গেছে!');
+                console.log('লগআউট হয়ে গেছে! পুরনো মেমোরি ডিলিট করা হচ্ছে...');
                 if(fs.existsSync('auth_info_baileys')) {
                     fs.rmSync('auth_info_baileys', { recursive: true, force: true });
                 }
-                startBot();
+                setTimeout(startBot, 5000);
             }
         } else if(connection === 'open') {
             currentQR = '';
@@ -116,28 +120,31 @@ async function startBot() {
                 realChannelJid = metadata.id;
                 console.log('✅ আপনার চ্যানেলের আসল ID পাওয়া গেছে: ' + realChannelJid);
             } catch(err) {
-                console.log('⚠️ চ্যানেল ID বের করতে সমস্যা হয়েছে:', err.message);
+                console.log('⚠️ চ্যানেল ID বের করতে সমস্যা:', err.message);
             }
         }
     });
-
-    cron.schedule('*/10 * * * *', async () => {
-        if(!realChannelJid || connectionStatus !== 'connected') return;
-        
-        try {
-            let feed = await parser.parseURL(RSS_URL);
-            if (feed.items.length > 0) {
-                let latest = feed.items[0];
-                if (latest.guid !== lastArticleGuid) {
-                    lastArticleGuid = latest.guid;
-                    let message = `🔴 *${latest.title}*\n\nবিস্তারিত পড়ুন: 👇\n${latest.link}`;
-                    
-                    await sock.sendMessage(realChannelJid, { text: message });
-                    console.log('✅ সফলভাবে চ্যানেলে খবর পাঠানো হয়েছে:', latest.title);
-                }
-            }
-        } catch (error) {}
-    });
 }
+
+// ⚠️ ক্রন জব (অটো মেসেজ) লুপের বাইরে রাখা হলো যাতে ডাবল মেসেজ না যায়
+cron.schedule('*/10 * * * *', async () => {
+    if(!realChannelJid || connectionStatus !== 'connected' || !globalSock) return;
+    
+    try {
+        let feed = await parser.parseURL(RSS_URL);
+        if (feed.items.length > 0) {
+            let latest = feed.items[0];
+            if (latest.guid !== lastArticleGuid) {
+                lastArticleGuid = latest.guid;
+                let message = `🔴 *${latest.title}*\n\nবিস্তারিত পড়ুন: 👇\n${latest.link}`;
+                
+                await globalSock.sendMessage(realChannelJid, { text: message });
+                console.log('✅ সফলভাবে চ্যানেলে খবর পাঠানো হয়েছে:', latest.title);
+            }
+        }
+    } catch (error) {
+        console.log('❌ খবর আনতে সমস্যা:', error.message);
+    }
+});
 
 startBot();
