@@ -3,34 +3,58 @@ const Parser = require('rss-parser');
 const cron = require('node-cron');
 const express = require('express');
 const pino = require('pino');
+const fs = require('fs');
 
 const app = express();
 let currentQR = '';
 let connectionStatus = 'Connecting...';
 
 // ==========================================
-// এই কোডটি আপনার লিংকে QR Code দেখাবে
+// ওয়েবসাইটে QR Code এবং Auto-Reload সিস্টেম
 // ==========================================
 app.get('/', (req, res) => {
     if (connectionStatus === 'connected') {
         res.send('<h1 style="color:green;text-align:center;margin-top:50px;">✅ হোয়াটসঅ্যাপ সফলভাবে কানেক্ট হয়েছে! বট কাজ করছে...</h1>');
     } else if (currentQR) {
         res.send(`
-            <div style="text-align:center;margin-top:50px;font-family:sans-serif;">
+            <html>
+            <head>
+                <meta http-equiv="refresh" content="10"> </head>
+            <body style="text-align:center;margin-top:50px;font-family:sans-serif;">
                 <h2>নিচের QR কোডটি হোয়াটসঅ্যাপ থেকে স্ক্যান করুন</h2>
                 <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(currentQR)}" alt="QR Code" style="border: 2px solid #ccc; padding: 10px; border-radius: 10px;"/>
-                <p style="color:red;font-weight:bold;margin-top:15px;">স্ক্যান করা হয়ে গেলে এই পেজটি রিলোড (Refresh) দিন।</p>
-            </div>
+                <p style="color:red;font-weight:bold;margin-top:15px;">পেজটি নিজে নিজেই রিলোড হবে, দয়া করে কাটবেন না।</p>
+            </body>
+            </html>
         `);
     } else {
-        res.send('<h2 style="text-align:center;margin-top:50px;font-family:sans-serif;">অপেক্ষা করুন, QR কোড তৈরি হচ্ছে... ১০ সেকেন্ড পর পেজটি রিলোড দিন।</h2>');
+        res.send(`
+            <html>
+            <head><meta http-equiv="refresh" content="5"></head>
+            <body style="text-align:center;margin-top:50px;font-family:sans-serif;">
+                <h2>অপেক্ষা করুন, QR কোড তৈরি হচ্ছে...</h2>
+                <p>সার্ভার রেডি হচ্ছে, পেজটি নিজে নিজেই রিলোড হবে।</p>
+                <br><br><br>
+                <p style="color:gray; font-size:14px;">যদি ২ মিনিট পরও QR কোড না আসে, তবে নিচের বাটনে ক্লিক করুন:</p>
+                <a href="/reset" style="display:inline-block; padding:10px 20px; background:red; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">বট Reset করুন</a>
+            </body>
+            </html>
+        `);
     }
+});
+
+// মেমোরি জ্যাম হলে রিসেট করার লজিক
+app.get('/reset', (req, res) => {
+    if(fs.existsSync('auth_info_baileys')) {
+        fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+    }
+    res.send('<h2 style="text-align:center;margin-top:50px;color:green;">বট সফলভাবে রিসেট হয়েছে! <br><br> <a href="/">এখানে ক্লিক করে মূল পেজে ফিরে যান</a></h2>');
+    setTimeout(() => process.exit(0), 1000); // সার্ভার রিস্টার্ট করবে
 });
 
 app.listen(process.env.PORT || 3000, () => console.log('Server is running...'));
 
 const RSS_URL = 'https://channelabd.com/rss.php'; 
-// আপনার হোয়াটসঅ্যাপ চ্যানেলের ইনভাইট কোড
 const CHANNEL_INVITE_CODE = '0029VbCCyU59MF9ARXY2xw39'; 
 
 let lastArticleGuid = '';
@@ -54,19 +78,23 @@ async function startBot() {
         const { connection, lastDisconnect, qr } = update;
         
         if(qr) {
-            currentQR = qr; // ওয়েবসাইটে দেখানোর জন্য সেভ করা হলো
-            console.log('✅ QR Code ওয়েবসাইটে লাইভ করা হয়েছে! আপনার লিংকে যান।');
+            currentQR = qr; 
+            console.log('✅ QR Code ওয়েবসাইটে লাইভ করা হয়েছে!');
         }
         
         if(connection === 'close') {
             connectionStatus = 'disconnected';
+            currentQR = '';
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('কানেকশন বন্ধ হয়েছে। আবার চালু হচ্ছে...');
             if(shouldReconnect) {
                 startBot();
             } else {
                 console.log('লগআউট হয়ে গেছে!');
-                currentQR = '';
+                if(fs.existsSync('auth_info_baileys')) {
+                    fs.rmSync('auth_info_baileys', { recursive: true, force: true });
+                }
+                startBot();
             }
         } else if(connection === 'open') {
             currentQR = '';
@@ -84,7 +112,6 @@ async function startBot() {
         }
     });
 
-    // প্রতি ১০ মিনিট পর পর ওয়েবসাইট চেক করবে
     cron.schedule('*/10 * * * *', async () => {
         if(!realChannelJid || connectionStatus !== 'connected') return;
         
