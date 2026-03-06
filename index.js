@@ -4,39 +4,46 @@ const cron = require('node-cron');
 const express = require('express');
 const pino = require('pino');
 const fs = require('fs');
+const QRCode = require('qrcode');
 
 const app = express();
 let currentQR = '';
 let connectionStatus = 'Connecting...';
 
 // ==========================================
-// ওয়েবসাইটে QR Code এবং Auto-Reload সিস্টেম
+// ১০০% গ্যারান্টিড QR Code জেনারেটর
 // ==========================================
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
     if (connectionStatus === 'connected') {
         res.send('<h1 style="color:green;text-align:center;margin-top:50px;">✅ হোয়াটসঅ্যাপ সফলভাবে কানেক্ট হয়েছে! বট কাজ করছে...</h1>');
     } else if (currentQR) {
-        res.send(`
-            <html>
-            <head>
-                <meta http-equiv="refresh" content="10"> </head>
-            <body style="text-align:center;margin-top:50px;font-family:sans-serif;">
-                <h2>নিচের QR কোডটি হোয়াটসঅ্যাপ থেকে স্ক্যান করুন</h2>
-                <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(currentQR)}" alt="QR Code" style="border: 2px solid #ccc; padding: 10px; border-radius: 10px;"/>
-                <p style="color:red;font-weight:bold;margin-top:15px;">পেজটি নিজে নিজেই রিলোড হবে, দয়া করে কাটবেন না।</p>
-            </body>
-            </html>
-        `);
+        try {
+            // গুগল API এর বদলে সরাসরি লোকাল ইমেজ তৈরি
+            const qrImage = await QRCode.toDataURL(currentQR);
+            res.send(`
+                <html>
+                <head><meta http-equiv="refresh" content="5"></head>
+                <body style="text-align:center;margin-top:50px;font-family:sans-serif;background:#f4f4f4;">
+                    <div style="background:#fff;display:inline-block;padding:30px;border-radius:10px;box-shadow:0 4px 10px rgba(0,0,0,0.1);">
+                        <h2 style="color:#333;">নিচের QR কোডটি হোয়াটসঅ্যাপ থেকে স্ক্যান করুন</h2>
+                        <img src="${qrImage}" alt="QR Code" style="border:2px solid #ddd; padding:10px; border-radius:10px; width:300px; height:300px;"/>
+                        <p style="color:#d9534f;font-weight:bold;margin-top:15px;">পেজটি নিজে নিজেই রিলোড হবে, দয়া করে কাটবেন না।</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        } catch (err) {
+            res.send('<h2 style="text-align:center;">QR Code লোড হতে সমস্যা হচ্ছে...</h2>');
+        }
     } else {
         res.send(`
             <html>
             <head><meta http-equiv="refresh" content="5"></head>
             <body style="text-align:center;margin-top:50px;font-family:sans-serif;">
-                <h2>অপেক্ষা করুন, QR কোড তৈরি হচ্ছে...</h2>
-                <p>সার্ভার রেডি হচ্ছে, পেজটি নিজে নিজেই রিলোড হবে।</p>
-                <br><br><br>
-                <p style="color:gray; font-size:14px;">যদি ২ মিনিট পরও QR কোড না আসে, তবে নিচের বাটনে ক্লিক করুন:</p>
-                <a href="/reset" style="display:inline-block; padding:10px 20px; background:red; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">বট Reset করুন</a>
+                <h2 style="color:#555;">অপেক্ষা করুন, বট রেডি হচ্ছে...</h2>
+                <p>পেজটি নিজে নিজেই রিলোড হবে।</p>
+                <br><br>
+                <a href="/reset" style="display:inline-block; padding:10px 20px; background:#d9534f; color:white; text-decoration:none; border-radius:5px;">বট Reset করুন</a>
             </body>
             </html>
         `);
@@ -49,7 +56,7 @@ app.get('/reset', (req, res) => {
         fs.rmSync('auth_info_baileys', { recursive: true, force: true });
     }
     res.send('<h2 style="text-align:center;margin-top:50px;color:green;">বট সফলভাবে রিসেট হয়েছে! <br><br> <a href="/">এখানে ক্লিক করে মূল পেজে ফিরে যান</a></h2>');
-    setTimeout(() => process.exit(0), 1000); // সার্ভার রিস্টার্ট করবে
+    setTimeout(() => process.exit(0), 1000); 
 });
 
 app.listen(process.env.PORT || 3000, () => console.log('Server is running...'));
@@ -62,7 +69,9 @@ let realChannelJid = null;
 const parser = new Parser();
 
 async function startBot() {
+    console.log('বট চালু হচ্ছে...');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    console.log('মেমোরি লোড হয়েছে...');
     
     const sock = makeWASocket({
         auth: state,
@@ -79,7 +88,7 @@ async function startBot() {
         
         if(qr) {
             currentQR = qr; 
-            console.log('✅ QR Code ওয়েবসাইটে লাইভ করা হয়েছে!');
+            console.log('✅ QR Code তৈরি হয়েছে! ওয়েবসাইটে যান।');
         }
         
         if(connection === 'close') {
